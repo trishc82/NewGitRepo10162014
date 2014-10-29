@@ -1,0 +1,89 @@
+#!/usr/bin/env python
+
+import sys
+import urllib
+import urllib2
+import subprocess
+import re
+import json
+
+#################################
+# Begin Configuration variables #
+#################################
+
+# Url of the ttextpro.exe cgi on your web server
+URL = 'https://4d67262e.ngrok.com/scripts/ttextpro.exe'
+# Provider key from the Source Control Providers dialog
+PROVIDER_KEY = '{79892515-4fec-49c6-9963-02a790ab8383}:{7c1540be-c33a-44b8-be6f-237f86d6141c}'
+# Tags used to attach to issues, test cases, and requirements. Format is "[TAG-NUMBER]".
+ISSUE_TAG = 'IS'
+TEST_CASE_TAG = 'TC'
+REQUIREMENT_TAG = 'RQ'
+
+###############################
+# End Configuration variables #
+###############################
+
+TAG_PATTERN = r'\[(%s|%s|%s)-(\d+)\]' % (ISSUE_TAG, TEST_CASE_TAG, REQUIREMENT_TAG)
+TAG_REGEX = re.compile(TAG_PATTERN, re.IGNORECASE)
+TAG_MAP = {ISSUE_TAG: 'issue',
+           TEST_CASE_TAG: 'test case',
+           REQUIREMENT_TAG: 'requirement'}
+
+# Run a git command.
+def git(*args):
+    return subprocess.check_output(('git',) + args, universal_newlines=True).strip()
+
+# Get the full CGI URL.
+def get_url():
+    return URL + '?' + urllib.urlencode({ 'action': 'VerifyAttachment' })
+
+# Get the object type based on the tag.
+def get_object_type(tag):
+    return TAG_MAP[tag.upper()]
+
+# Get JSON data for a ref.
+def get_data(commit_message):
+    return {'providerKey': PROVIDER_KEY,
+            'attachmentList': get_commit(commit_message)}
+
+# Get JSON data for commits being pushed to a ref.
+def get_commit(commit_message):
+    return [{'toAttachList': get_attachments(commit_message)}]
+
+# Get JSON data for items to attach to.
+def get_attachments(commit_message):
+    matches = TAG_REGEX.finditer(commit_message)
+    attachments = []
+
+    for match in matches:
+        attachments.append({'objectType': get_object_type(match.group(1)),
+                            'number': int(match.group(2))})
+
+    return attachments
+
+# Handle attaching for a ref.
+def handle_commit_message(commit_message):
+    req = urllib2.Request(get_url(),
+            json.dumps(get_data(commit_message)),
+            {'Content-Type': 'application/json'})
+    f = urllib2.urlopen(req)
+    res = json.loads(f.read())
+    f.close()
+
+    if res['errorCode'] > 1:
+        print(res['errorMessage'])
+    elif res['errorCode'] == 1:
+        for err in res['errorList']:
+            print(err['errorMessage'])
+
+    return res['errorCode'] == 0
+
+if __name__ == '__main__':
+    if len(sys.argv) > 1:
+        f = open(sys.argv[1], 'r')
+        commit_message = f.read()
+        f.close()
+        if not handle_commit_message(commit_message):
+            sys.exit(1)
+
